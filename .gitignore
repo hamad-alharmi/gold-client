@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-electron/
+*.log
+logs/
+.DS_Store
+build-resources/*.ico
+build-resources/*.icns
+assets/icons/
+.tmp/
