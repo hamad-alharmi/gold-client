@@ -12,7 +12,6 @@ const useStore = create((set) => ({
   addInstance: (inst) => set(s => ({ instances: [...s.instances, inst] })),
   removeInstance: (id) => set(s => ({ instances: s.instances.filter(i => i.id!==id) })),
 
-  // Active instance
   activeInstanceId: null,
   setActiveInstanceId: (id) => set({ activeInstanceId: id }),
 
@@ -24,19 +23,64 @@ const useStore = create((set) => ({
   settings: null,
   setSettings: (settings) => set({ settings }),
 
+  // ──────────────────────────────────────────────────────────
   // Launch state
-  runningInstances: new Set(),
-  launchProgress: {},
-  gameLogs: {},
+  //
+  // runningInstances: Set of instance IDs that are CONFIRMED running
+  //   (only added after first game output, not on launch initiation)
+  //
+  // launchingInstances: Set of instance IDs currently in launch flow
+  //   (set when user clicks Launch, cleared when game starts OR fails)
+  //   This drives the progress bar on the button — separate from "running".
+  //
+  // This two-state model prevents the stop button from appearing
+  // on a game that failed to launch.
+  // ──────────────────────────────────────────────────────────
+  runningInstances:  new Set(),
+  launchingInstances: new Set(),
+  launchProgress:    {},   // { [instanceId]: { message, percent, type } }
+  gameLogs:          {},   // { [instanceId]: string[] }
 
-  setInstanceRunning: (id, running) => set(s => {
-    const next = new Set(s.runningInstances);
-    running ? next.add(id) : next.delete(id);
-    return { runningInstances: next };
+  // Call when user clicks Launch
+  setInstanceLaunching: (id, launching) => set(s => {
+    const next = new Set(s.launchingInstances);
+    launching ? next.add(id) : next.delete(id);
+    return { launchingInstances: next };
   }),
+
+  // Call ONLY when game is confirmed running (first output received)
+  setInstanceRunning: (id, running) => set(s => {
+    const nr = new Set(s.runningInstances);
+    const nl = new Set(s.launchingInstances);
+    if (running) {
+      nr.add(id);
+      nl.delete(id); // no longer "launching" — now "running"
+    } else {
+      nr.delete(id);
+      nl.delete(id); // also clear launching in case it was never confirmed
+    }
+    return { runningInstances: nr, launchingInstances: nl };
+  }),
+
   setLaunchProgress: (id, p) => set(s => ({ launchProgress: { ...s.launchProgress, [id]: p } })),
-  clearLaunchProgress: (id) => set(s => { const n = {...s.launchProgress}; delete n[id]; return { launchProgress: n }; }),
-  appendGameLog: (id, line) => set(s => ({ gameLogs: { ...s.gameLogs, [id]: [...(s.gameLogs[id]||[]).slice(-500), line] } })),
+
+  clearLaunchProgress: (id) => set(s => {
+    const n = { ...s.launchProgress };
+    delete n[id];
+    return { launchProgress: n };
+  }),
+
+  // Clear BOTH launching + running state and progress for an instance
+  clearInstanceState: (id) => set(s => {
+    const nr = new Set(s.runningInstances);   nr.delete(id);
+    const nl = new Set(s.launchingInstances); nl.delete(id);
+    const np = { ...s.launchProgress };       delete np[id];
+    return { runningInstances: nr, launchingInstances: nl, launchProgress: np };
+  }),
+
+  appendGameLog: (id, line) => set(s => ({
+    gameLogs: { ...s.gameLogs, [id]: [...(s.gameLogs[id] || []).slice(-500), line] },
+  })),
   clearGameLogs: (id) => set(s => ({ gameLogs: { ...s.gameLogs, [id]: [] } })),
 
   // UI
@@ -45,7 +89,7 @@ const useStore = create((set) => ({
   isMaximized: false,
   setIsMaximized: (v) => set({ isMaximized: v }),
 
-  // Versions cache
+  // Version cache
   versions: null,
   setVersions: (v) => set({ versions: v }),
 }));
