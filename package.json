@@ -3,22 +3,18 @@
   "version": "1.0.0",
   "description": "Gold Client — A high-performance Minecraft launcher",
   "main": "src/main/index.js",
-  "author": {
-    "name": "Gold Client",
-    "email": "support@goldclient.gg"
-  },
+  "author": { "name": "Gold Client", "email": "support@goldclient.gg" },
   "license": "MIT",
   "scripts": {
     "start":           "electron .",
     "dev":             "concurrently \"npm run dev:renderer\" \"npm run dev:electron\"",
     "dev:renderer":    "vite --port 3000",
     "dev:electron":    "wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .",
-    "build:renderer":  "vite build",
-    "build:electron":  "electron-builder",
     "build:win":       "npm run build:renderer && electron-builder --win --x64 --publish=never",
     "build:win:release": "npm run build:renderer && electron-builder --win --x64 --publish=always",
     "build:mac":       "npm run build:renderer && electron-builder --mac --publish=never",
     "build:linux":     "npm run build:renderer && electron-builder --linux --publish=never",
+    "build:renderer":  "vite build",
     "postinstall":     "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -53,32 +49,22 @@
     "zustand":               "^4.5.2"
   },
   "build": {
-    "appId":       "gg.goldclient.launcher",
-    "productName": "Gold Client",
-    "copyright":   "Copyright © 2024 Gold Client",
-
+    "appId":        "gg.goldclient.launcher",
+    "productName":  "Gold Client",
+    "copyright":    "Copyright \u00a9 2024 Gold Client",
     "directories": {
       "output":         "dist-electron",
       "buildResources": "build-resources"
     },
-
     "files": [
       "src/main/**/*",
       "dist/**/*",
       "package.json"
     ],
-
-    "extraResources": [],
-
     "win": {
-      "target": [
-        { "target": "nsis", "arch": ["x64"] }
-      ],
-      "icon": "build-resources/icon.ico",
-      "publisherName": "Gold Client",
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
       "requestedExecutionLevel": "asInvoker"
     },
-
     "nsis": {
       "oneClick":                false,
       "allowDirChange":          true,
@@ -86,28 +72,20 @@
       "createStartMenuShortcut": true,
       "shortcutName":            "Gold Client",
       "deleteAppDataOnUninstall": false,
-      "runAfterFinish":          true,
-      "installerSidebar":        "build-resources/installerSidebar.bmp",
-      "differentialPackage":     true,
-      "license":                 "LICENSE"
+      "runAfterFinish":           true
     },
-
     "mac": {
       "target":   ["dmg", "zip"],
-      "icon":     "build-resources/icon.icns",
       "category": "public.app-category.games"
     },
-
     "linux": {
       "target":   ["AppImage", "deb"],
-      "icon":     "build-resources/icon.png",
       "category": "Game"
     },
-
     "publish": {
-      "provider": "github",
-      "owner":    "hamad-alharmi",
-      "repo":     "gold-client",
+      "provider":    "github",
+      "owner":       "hamad-alharmi",
+      "repo":        "gold-client",
       "releaseType": "release"
     }
   }
