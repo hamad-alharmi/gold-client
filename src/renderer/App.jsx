@@ -15,10 +15,14 @@ import Console   from './pages/Console';
 const gc = window.goldClient;
 
 export default function App() {
-  const { auth, setAuth, setSettings, setInstances, setIsMaximized,
-          setInstanceRunning, setLaunchProgress, clearLaunchProgress, appendGameLog } = useStore();
+  const {
+    auth, setAuth, setSettings, setInstances, setIsMaximized,
+    setInstanceRunning, setLaunchProgress, clearLaunchProgress, appendGameLog,
+  } = useStore();
+
   const [loading, setLoading] = useState(true);
 
+  // ── Bootstrap ──────────────────────────────────────────────────
   useEffect(() => {
     async function init() {
       try {
@@ -28,21 +32,56 @@ export default function App() {
       } catch (err) {
         console.error('Init error:', err);
         toast.error('Failed to initialize launcher');
-      } finally { setLoading(false); }
+      } finally {
+        setLoading(false);
+      }
     }
     init();
   }, []);
 
+  // ── Window maximize state ──────────────────────────────────────
   useEffect(() => gc.app.onMaximized(setIsMaximized), []);
 
+  // ── Auth events ──────────────────────────────────────────────
   useEffect(() => {
-    const u1 = gc.launcher.onProgress(d  => setLaunchProgress(d.instanceId, { message:d.message, percent:d.percent, type:d.type }));
-    const u2 = gc.launcher.onLog(d       => appendGameLog(d.instanceId, d.line));
-    const u3 = gc.launcher.onGameStart(d => { setInstanceRunning(d.instanceId, true);  toast.success('Minecraft launched!', { icon:'🎮' }); });
-    const u4 = gc.launcher.onGameClose(d => { setInstanceRunning(d.instanceId, false); clearLaunchProgress(d.instanceId); if (d.code !== 0) toast.error(`Game closed with code ${d.code}`); });
-    return () => { u1(); u2(); u3(); u4(); };
+    const u1 = gc.auth.onTokenRefreshed((profile) => {
+      setAuth(profile);
+    });
+    const u2 = gc.auth.onSessionExpired(() => {
+      setAuth(null);
+      toast.error('Your Microsoft session expired. Please log in again.');
+    });
+    return () => { u1(); u2(); };
   }, []);
 
+  // ── Launcher events ─────────────────────────────────────────
+  useEffect(() => {
+    const u1 = gc.launcher.onProgress((data) => {
+      setLaunchProgress(data.instanceId, { message: data.message, percent: data.percent, type: data.type });
+    });
+    const u2 = gc.launcher.onLog((data) => {
+      appendGameLog(data.instanceId, data.line);
+    });
+    const u3 = gc.launcher.onGameStart((data) => {
+      setInstanceRunning(data.instanceId, true);
+      toast.success('Minecraft launched!', { icon: '🎮' });
+    });
+    const u4 = gc.launcher.onGameClose((data) => {
+      setInstanceRunning(data.instanceId, false);
+      clearLaunchProgress(data.instanceId);
+      if (data.code !== 0 && data.code !== null) {
+        toast.error(`Game closed unexpectedly (exit code ${data.code}). Check the Console tab for logs.`);
+      }
+    });
+    // New: explicit launch errors forwarded from main process
+    const u5 = gc.launcher.onError((data) => {
+      clearLaunchProgress(data.instanceId);
+      toast.error(data.message, { duration: 8000 });
+    });
+    return () => { u1(); u2(); u3(); u4(); u5(); };
+  }, []);
+
+  // ── Loading screen ───────────────────────────────────────────
   if (loading) return (
     <div className="flex h-screen w-screen items-center justify-center bg-dark-950">
       <div className="flex flex-col items-center gap-4">
@@ -53,18 +92,24 @@ export default function App() {
           </div>
         </div>
         <div className="flex gap-1.5">
-          {[0,1,2].map(i => <motion.div key={i} className="w-2 h-2 rounded-full bg-gold-500" animate={{scale:[1,1.5,1],opacity:[0.4,1,0.4]}} transition={{duration:0.8,delay:i*0.2,repeat:Infinity}} />)}
+          {[0,1,2].map(i => (
+            <motion.div key={i} className="w-2 h-2 rounded-full bg-gold-500"
+              animate={{scale:[1,1.5,1],opacity:[0.4,1,0.4]}}
+              transition={{duration:0.8,delay:i*0.2,repeat:Infinity}} />
+          ))}
         </div>
       </div>
     </div>
   );
 
+  // ── Not logged in ───────────────────────────────────────────
   if (!auth?.username) return (
     <div className="flex flex-col h-screen bg-dark-950 overflow-hidden">
       <TitleBar /><Login />
     </div>
   );
 
+  // ── Main app ────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-screen bg-dark-950 overflow-hidden">
       <TitleBar />
@@ -90,8 +135,8 @@ export default function App() {
 function Page({ children }) {
   return (
     <motion.div className="h-full"
-      initial={{ opacity:0, x:12 }} animate={{ opacity:1, x:0 }}
-      exit={{ opacity:0, x:-12 }} transition={{ duration:0.22, ease:'easeOut' }}>
+      initial={{opacity:0,x:12}} animate={{opacity:1,x:0}}
+      exit={{opacity:0,x:-12}} transition={{duration:0.22,ease:'easeOut'}}>
       {children}
     </motion.div>
   );
