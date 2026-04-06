@@ -1,0 +1,158 @@
+# Gold Client — Build & Release
+#
+# Triggers:
+#   1. Push a version tag (v1.0.0, v1.2.3-beta, etc.) → builds + publishes to GitHub Releases
+#   2. Workflow dispatch → manual build without publishing
+#
+# How to release:
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#   → This workflow runs, builds the .exe, and creates a GitHub Release automatically.
+
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to GitHub Releases?'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────
+  build-windows:
+    name: Build — Windows x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Vite renderer
+        run: npx vite build
+
+      # Publish to GitHub Releases when this is a tag push
+      - name: Build & publish installer (tag release)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: npx electron-builder --win --x64 --publish=always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build without publishing for workflow_dispatch
+      - name: Build installer (manual / no publish)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        run: npx electron-builder --win --x64 --publish=never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoldClient-Windows-x64
+          path: |
+            dist-electron/*.exe
+            dist-electron/*.exe.blockmap
+            dist-electron/latest.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Uncomment to also build macOS DMG:
+  # build-macos:
+  #   name: Build — macOS
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with: { node-version: '20', cache: 'npm' }
+  #     - run: npm ci
+  #     - run: npx vite build
+  #     - run: npx electron-builder --mac --publish=never
+  #     - uses: actions/upload-artifact@v4
+  #       with: { name: GoldClient-macOS, path: dist-electron/*.dmg }
+
+  # ──────────────────────────────────────────────────────────────────────
+  create-release:
+    name: Create GitHub Release
+    needs: [build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout (for changelog)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: GoldClient-Windows-x64
+          path: ./release-files
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          # Get commits since last tag for release notes
+          PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV" ]; then
+            COMMITS=$(git log ${PREV}..HEAD --pretty=format:'- %s' --no-merges)
+          else
+            COMMITS=$(git log --pretty=format:'- %s' --no-merges -20)
+          fi
+          echo "commits<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Gold Client ${{ steps.notes.outputs.version }}
+          body: |
+            ## ⚔️ Gold Client ${{ steps.notes.outputs.version }}
+
+            ### Installation
+            1. Download **Gold Client Setup ${{ steps.notes.outputs.version }}.exe** below
+            2. Run the installer
+            3. Launch Gold Client from your Desktop or Start Menu
+
+            ### What's Changed
+            ${{ steps.notes.outputs.commits }}
+
+            ### Requirements
+            - Windows 10/11 (64-bit)
+            - Java 17 or later — [Download from Adoptium](https://adoptium.net)
+            - Internet connection (for first-time asset download)
+
+            ---
+            *Auto-built by GitHub Actions*
+          files: ./release-files/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
