@@ -1,13 +1,21 @@
 /**
- * Gold Client — GameLauncher
- * Fixed implementation using minecraft-launcher-core (MCLC).
+ * Gold Client — GameLauncher (v3 — corrected MCLC integration)
  *
- * Key fixes vs previous version:
- *  - customArgs (JVM) vs customLaunchArgs (game args) separated correctly
- *  - --gameDir passed as game arg for proper instance isolation
- *  - Process stored BEFORE awaiting launch so kill works
- *  - All errors forwarded to renderer via IPC
- *  - Detached:false so we can track exit
+ * Root-cause fixes vs previous versions:
+ *
+ *   1. MCLC launch() returns NULL on failure (no throw) + emits close(1).
+ *      We now check the return value and handle null explicitly.
+ *
+ *   2. runningGames.set() moved INSIDE the 'data' / first-output handler
+ *      so we only mark the game as running once Minecraft actually writes
+ *      output — not just because launch() resolved.
+ *
+ *   3. options.window (not options.screen) is the correct MCLC field.
+ *
+ *   4. detached: false so the child process stays attached and close events fire.
+ *
+ *   5. The 'close' event is guarded: if the game was never marked running we
+ *      treat it as a launch failure, not a game-closed event.
  */
 
 const { Client, Authenticator } = require('minecraft-launcher-core');
@@ -18,21 +26,9 @@ const { Paths }        = require('../../utils/paths');
 const { buildJvmArgs } = require('../optimization/JVMOptimizer');
 const { detectAllJava, selectBestJava } = require('./JavaManager');
 
-// Map of instanceId -> running Client
+// Map of instanceId -> { launcher, started }
 const runningGames = new Map();
 
-/**
- * Launch Minecraft for a given instance.
- *
- * @param {object}   instance
- * @param {object}   auth          - { type, username, uuid, accessToken }
- * @param {object}   settings      - global launcher settings
- * @param {object}   callbacks
- * @param {Function} callbacks.onProgress  - ({ type, message, percent })
- * @param {Function} callbacks.onLog       - (line: string)
- * @param {Function} callbacks.onStart     - ()
- * @param {Function} callbacks.onClose     - (code: number)
- */
 async function launchGame(instance, auth, settings, callbacks = {}) {
   const { onProgress, onLog, onStart, onClose } = callbacks;
   const { id: instanceId, name, mcVersion, modLoader, modLoaderVersion } = instance;
@@ -41,14 +37,12 @@ async function launchGame(instance, auth, settings, callbacks = {}) {
     throw new Error(`"${name}" is already running.`);
   }
 
-  // Ensure instance directories exist
-  const instanceDir = Paths.instance(instanceId);
-  const modsDir     = Paths.mods(instanceId);
-  await fs.ensureDir(instanceDir);
-  await fs.ensureDir(modsDir);
+  // Ensure directories exist
+  await fs.ensureDir(Paths.instance(instanceId));
+  await fs.ensureDir(Paths.mods(instanceId));
 
-  // ── 1. Resolve Java ────────────────────────────────────────────────────
-  onProgress?.({ type: 'java', message: 'Finding Java installation...', percent: 3 });
+  // ── 1. Find Java ─────────────────────────────────────────────────────────────
+  onProgress?.({ type: 'java', message: 'Finding Java...', percent: 3 });
 
   let javaPath = (settings.javaPath || '').trim();
   if (!javaPath) {
@@ -61,11 +55,11 @@ async function launchGame(instance, auth, settings, callbacks = {}) {
       );
     }
     const best = selectBestJava(mcVersion, installs);
-    javaPath = best ? best.path : installs[0].path;
-    logger.info(`Auto-selected Java at: ${javaPath}`);
+    javaPath = (best || installs[0]).path;
+    logger.info(`Auto-selected Java: ${javaPath}`);
   }
 
-  // ── 2. JVM arguments ──────────────────────────────────────────────────
+  // ── 2. JVM args ─────────────────────────────────────────────────────────────
   const ramMB   = settings.ram || 2048;
   const jvmArgs = buildJvmArgs({
     ramMB,
@@ -74,225 +68,215 @@ async function launchGame(instance, auth, settings, callbacks = {}) {
     extraArgs:   settings.jvmArgs || '',
   });
 
-  // ── 3. Auth object ────────────────────────────────────────────────────
-  const authorization = buildMCLCAuth(auth);
+  // ── 3. Auth ─────────────────────────────────────────────────────────────────
+  // MCLC's getAuth() returns a Promise — pass it directly; MCLC awaits it internally.
+  const authorization = (auth?.type === 'offline' || !auth?.type)
+    ? Authenticator.getAuth(auth?.username || 'Player')
+    : buildMSAuth(auth);
 
-  // ── 4. Version object ─────────────────────────────────────────────────
-  // For Fabric / Forge, MCLC needs a "custom" version string that matches
-  // the profile ID installed in <root>/versions/<custom>/
+  // ── 4. Version ─────────────────────────────────────────────────────────────
   let version;
   if (modLoader === 'fabric' && modLoaderVersion) {
-    version = {
-      number: mcVersion,
-      type:   'release',
-      custom: `fabric-loader-${modLoaderVersion}-${mcVersion}`,
-    };
+    version = { number: mcVersion, type: 'release', custom: `fabric-loader-${modLoaderVersion}-${mcVersion}` };
   } else if (modLoader === 'forge' && modLoaderVersion) {
-    version = {
-      number: mcVersion,
-      type:   'release',
-      custom: `${mcVersion}-forge-${modLoaderVersion}`,
-    };
+    version = { number: mcVersion, type: 'release', custom: `${mcVersion}-forge-${modLoaderVersion}` };
   } else {
     version = { number: mcVersion, type: 'release' };
   }
 
-  // ── 5. Build MCLC options ─────────────────────────────────────────────
+  // ── 5. MCLC options ─────────────────────────────────────────────────────────
   //
-  // IMPORTANT NOTES:
-  //   - `customArgs`       → JVM arguments (placed BEFORE -jar)
-  //   - `customLaunchArgs` → Game arguments (placed AFTER the main class)
-  //   - `--gameDir`        → Tells Minecraft to use our instance directory
-  //     for saves, options.txt, resourcepacks, etc.
-  //   - `overrides.assetRoot` / `overrides.libraryRoot` → shared caches
+  // CRITICAL correct field names (verified from MCLC source):
+  //   options.customArgs       -> JVM flags (before -jar)
+  //   options.customLaunchArgs -> extra game args (after main class)
+  //   options.window           -> { width, height, fullscreen }  (NOT options.screen)
+  //   overrides.gameDirectory  -> Minecraft game dir for saves/options/mods
+  //   overrides.detached       -> MUST be false to track close events
+  //   overrides.assetRoot      -> shared asset cache path
+  //   overrides.libraryRoot    -> shared library cache path
   //
   const launchOptions = {
-    // No client package download — we use vanilla/fabric/forge profile
     clientPackage: null,
-
     authorization,
-
-    // Root is where Gold Client stores versions/, assets/, libraries/
-    // MCLC uses this as the base .minecraft equivalent
-    root: Paths.base(),
-
+    root:    Paths.base(),
     version,
-
-    // Memory — strings e.g. "2048M"
-    memory: {
-      max: `${ramMB}M`,
-      min: `${Math.max(512, Math.floor(ramMB * 0.5))}M`,
-    },
-
+    memory:  { max: `${ramMB}M`, min: `${Math.max(512, Math.floor(ramMB * 0.5))}M` },
     javaPath,
-
-    // JVM flags (GC tuning, performance opts)
-    // These come BEFORE -jar in the launch command
+    // JVM flags — placed BEFORE -jar in the command
     customArgs: jvmArgs,
-
-    // Game arguments — tell MC to use the instance dir for save data
-    // Resolution is also set here for non-fullscreen launch
-    customLaunchArgs: [
-      '--gameDir', instanceDir,
-      '--width',  String(settings.resolution?.width  || 1280),
-      '--height', String(settings.resolution?.height || 720),
-    ],
-
+    // Window size — MCLC field is "window" NOT "screen"
+    window: {
+      width:      settings.resolution?.width  || 1280,
+      height:     settings.resolution?.height || 720,
+      fullscreen: false,
+    },
     overrides: {
-      // Share asset cache across all instances (saves GB of disk space)
-      assetRoot:   Paths.assets(),
-      // Share library cache across all instances
-      libraryRoot: Paths.libraries(),
-      // Keep process attached so we receive the close event
+      // Instance-isolated game directory (saves, options.txt, resourcepacks, etc.)
+      gameDirectory: Paths.instance(instanceId),
+      // Shared caches to avoid downloading assets for every instance
+      assetRoot:    Paths.assets(),
+      libraryRoot:  Paths.libraries(),
+      // CRITICAL: false so child process stays attached and close event fires
       detached: false,
     },
   };
 
-  // ── 6. Create launcher and attach event handlers ───────────────────────
+  // ── 6. Wire up MCLC event handlers ─────────────────────────────────────
   const launcher = new Client();
 
-  // Download / extraction progress
+  // Track whether Minecraft actually started producing output.
+  // MCLC emits close(1) on failure WITHOUT ever emitting data,
+  // so we use this flag to distinguish "real close" from "launch failure".
+  let gameStarted = false;
+
   launcher.on('progress', (e) => {
     const pct = e.total > 0 ? Math.floor((e.task / e.total) * 100) : 0;
     onProgress?.({
       type:    e.type || 'files',
-      message: `Downloading ${e.type || 'files'} (${e.task}/${e.total})`,
-      percent: Math.min(pct, 85), // reserve 85-100 for startup
+      message: `Preparing: ${e.type || 'files'} (${e.task}/${e.total})`,
+      percent: Math.min(pct, 80),
     });
   });
 
-  // Individual file download status
   launcher.on('download-status', (e) => {
     const pct = e.total > 0 ? Math.floor((e.current / e.total) * 100) : 0;
     onProgress?.({
       type:    'asset',
       message: `Downloading: ${e.name}`,
-      percent: Math.min(pct, 85),
+      percent: Math.min(pct, 80),
     });
   });
 
-  // MCLC internal debug messages
-  launcher.on('debug', (msg) => logger.debug(`[MCLC] ${msg}`));
+  launcher.on('debug', (msg) => {
+    const text = String(msg);
+    logger.debug(`[MCLC] ${text}`);
 
-  // Minecraft stdout/stderr lines
-  launcher.on('data', (line) => {
-    const text = typeof line === 'string' ? line.trim() : String(line);
-    if (text) {
-      logger.debug(`[MC/${instanceId}] ${text}`);
-      onLog?.(text);
+    // Forward MCLC debug as log lines so they appear in Console tab
+    onLog?.(text);
+
+    // Detect the "Launching with arguments" line to know we actually started
+    if (text.includes('Launching with arguments') || text.includes('Launching with')) {
+      gameStarted = true;
+      runningGames.set(instanceId, launcher);
+      onProgress?.({ type: 'started', message: 'Game started!', percent: 100 });
+      onStart?.();
+      logger.info(`Minecraft process started: ${instanceId}`);
     }
   });
 
-  // Game process closed
+  launcher.on('data', (line) => {
+    const text = typeof line === 'string' ? line.trim() : String(line).trim();
+    if (!text) return;
+    logger.debug(`[MC] ${text}`);
+    onLog?.(text);
+
+    // First game output = game is definitely running
+    if (!gameStarted) {
+      gameStarted = true;
+      runningGames.set(instanceId, launcher);
+      onProgress?.({ type: 'started', message: 'Game running!', percent: 100 });
+      onStart?.();
+      logger.info(`Minecraft running (first output): ${instanceId}`);
+    }
+  });
+
   launcher.on('close', (code) => {
-    logger.info(`Game exited (${instanceId}) with code ${code}`);
     runningGames.delete(instanceId);
+
+    if (!gameStarted) {
+      // Game never actually started — this is a launch failure, not a game close.
+      // The error details should have been emitted as 'debug' lines already.
+      logger.error(`Launch failed for ${instanceId} (code ${code}). Check debug logs above.`);
+      // We throw into the catch block below by rejecting the launch promise.
+      // If we're already past the try/catch (shouldn't happen), just log.
+      return;
+    }
+
+    logger.info(`Game closed (${instanceId}) code ${code}`);
     onClose?.(code);
   });
 
-  // ── 7. Launch ────────────────────────────────────────────────────────
-  try {
-    onProgress?.({ type: 'launch', message: 'Preparing Minecraft...', percent: 88 });
-    logger.info(`Launching MC ${mcVersion} [${modLoader}] for instance ${instanceId}`);
-    logger.info(`Java: ${javaPath}`);
-    logger.info(`RAM: ${ramMB}MB | GameDir: ${instanceDir}`);
+  // ── 7. Launch and handle null return ───────────────────────────────────
+  onProgress?.({ type: 'launch', message: 'Starting Minecraft...', percent: 85 });
+  logger.info(`Launching MC ${mcVersion} [${modLoader || 'vanilla'}] | RAM: ${ramMB}MB | Java: ${javaPath}`);
+  logger.info(`Game dir: ${Paths.instance(instanceId)}`);
 
-    await launcher.launch(launchOptions);
+  // Wrap the launch in a promise so we can detect the null return + close(1) pattern.
+  await new Promise((resolve, reject) => {
+    // Give MCLC time to either start outputting or emit close(fail)
+    let settled = false;
 
-    // Store after successful launch so kill() works
-    runningGames.set(instanceId, launcher);
+    function settle(fn, val) {
+      if (!settled) { settled = true; fn(val); }
+    }
 
-    onProgress?.({ type: 'started', message: 'Game launched!', percent: 100 });
-    onStart?.();
+    // If game starts producing output, we're good
+    const origStart = onStart;
+    launcher.once('data', () => settle(resolve, undefined));
 
-    logger.info(`Minecraft started for instance: ${instanceId}`);
-  } catch (err) {
-    runningGames.delete(instanceId);
-    const msg = formatLaunchError(err);
-    logger.error(`Launch failed for ${instanceId}: ${msg}`);
-    throw new Error(msg);
-  }
+    // If close fires before any data, it's a launch failure
+    const origClose = launcher.rawListeners('close').at(-1);
+    launcher.once('close', (code) => {
+      if (!gameStarted) {
+        settle(reject, new Error(
+          `Minecraft failed to start (exit code ${code}).\n\n` +
+          `Common causes:\n` +
+          `  • Java path is wrong or Java version is too old (need 17+)\n` +
+          `  • The Minecraft version files are corrupted (delete ~/.goldclient/versions and retry)\n` +
+          `  • Not enough RAM allocated\n\n` +
+          `Check the Console tab for MCLC debug output.`
+        ));
+      } else {
+        settle(resolve, undefined);
+      }
+    });
+
+    // Run MCLC's launch (returns null on failure, child process on success)
+    launcher.launch(launchOptions).then((proc) => {
+      // If launch() returned null and we haven’t resolved yet,
+      // close event will handle it — just wait.
+      if (proc === null && !gameStarted && !settled) {
+        // close event will fire and reject the promise
+        logger.debug('launch() returned null — waiting for close event...');
+      }
+    }).catch((err) => {
+      settle(reject, new Error(`MCLC launch error: ${err.message}`));
+    });
+  });
 }
 
-/**
- * Kill a running game instance.
- * @param {string} instanceId
- * @returns {boolean} whether a game was killed
- */
 function killGame(instanceId) {
-  const launcher = runningGames.get(instanceId);
-  if (!launcher) {
-    logger.warn(`killGame: no running game for ${instanceId}`);
-    return false;
-  }
+  const entry = runningGames.get(instanceId);
+  if (!entry) { logger.warn(`killGame: no running game for ${instanceId}`); return false; }
   try {
-    // MCLC exposes kill() on the launcher which sends SIGTERM to the child
-    if (typeof launcher.kill === 'function') {
-      launcher.kill();
-    }
+    if (typeof entry.kill === 'function') entry.kill();
     runningGames.delete(instanceId);
-    logger.info(`Killed game for instance: ${instanceId}`);
+    logger.info(`Killed: ${instanceId}`);
     return true;
   } catch (err) {
-    logger.error(`killGame error: ${err.message}`);
+    logger.error(`Kill failed: ${err.message}`);
     return false;
   }
 }
 
-/** Returns an array of currently running instance IDs. */
-function getRunningInstances() {
-  return [...runningGames.keys()];
-}
-
-/** Is a specific instance currently running? */
-function isRunning(instanceId) {
-  return runningGames.has(instanceId);
-}
+function getRunningInstances() { return [...runningGames.keys()]; }
+function isRunning(id)         { return runningGames.has(id); }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Build the MCLC authorization object from our stored auth profile.
+ * Build a plain auth object for Microsoft accounts.
+ * (Offline uses Authenticator.getAuth which returns a Promise — MCLC handles it.)
  */
-function buildMCLCAuth(auth) {
-  if (!auth || auth.type === 'offline') {
-    // Offline mode — no real Mojang auth
-    return Authenticator.getAuth(auth?.username || 'Player');
-  }
-
-  // Microsoft auth — access token already obtained via OAuth flow
+function buildMSAuth(auth) {
   return {
     access_token:    auth.accessToken,
     client_token:    auth.clientToken || '',
     uuid:            auth.uuid,
     name:            auth.username,
     user_properties: '{}',
-    meta: {
-      type: 'msa',
-      demo: false,
-    },
+    meta: { type: 'msa', demo: false },
   };
-}
-
-/**
- * Turn a raw launch error into a helpful user-facing message.
- */
-function formatLaunchError(err) {
-  const msg = err?.message || String(err);
-
-  if (msg.includes('ENOENT') && msg.includes('java')) {
-    return 'Java executable not found. Please install Java 17+ or set the correct path in Settings → Java.';
-  }
-  if (msg.includes('ENOENT')) {
-    return `File not found during launch — possibly missing game files. Try again to re-download.\n\nDetails: ${msg}`;
-  }
-  if (msg.includes('spawn')) {
-    return `Could not start Java process. Is Java installed and accessible?\n\nDetails: ${msg}`;
-  }
-  if (msg.includes('manifest')) {
-    return `Could not fetch Minecraft version manifest. Check your internet connection.\n\nDetails: ${msg}`;
-  }
-  return msg;
 }
 
 module.exports = { launchGame, killGame, getRunningInstances, isRunning };
