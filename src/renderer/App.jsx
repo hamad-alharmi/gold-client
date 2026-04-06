@@ -17,14 +17,18 @@ const gc = window.goldClient;
 export default function App() {
   const {
     auth, setAuth, setSettings, setInstances, setIsMaximized,
-    setInstanceRunning, setLaunchProgress, clearLaunchProgress, appendGameLog,
+    setInstanceRunning,
+    setInstanceLaunching,
+    clearInstanceState,
+    setLaunchProgress,
+    appendGameLog,
   } = useStore();
 
   const [loading, setLoading] = useState(true);
 
   // ── Bootstrap ──────────────────────────────────────────────────
   useEffect(() => {
-    async function init() {
+    (async () => {
       try {
         setAuth(await gc.auth.getProfile());
         setSettings(await gc.settings.get());
@@ -35,18 +39,15 @@ export default function App() {
       } finally {
         setLoading(false);
       }
-    }
-    init();
+    })();
   }, []);
 
-  // ── Window maximize state ──────────────────────────────────────
+  // ── Window maximize ──────────────────────────────────────────────
   useEffect(() => gc.app.onMaximized(setIsMaximized), []);
 
   // ── Auth events ──────────────────────────────────────────────
   useEffect(() => {
-    const u1 = gc.auth.onTokenRefreshed((profile) => {
-      setAuth(profile);
-    });
+    const u1 = gc.auth.onTokenRefreshed((p) => setAuth(p));
     const u2 = gc.auth.onSessionExpired(() => {
       setAuth(null);
       toast.error('Your Microsoft session expired. Please log in again.');
@@ -56,28 +57,53 @@ export default function App() {
 
   // ── Launcher events ─────────────────────────────────────────
   useEffect(() => {
+    // Download/asset progress during launch
     const u1 = gc.launcher.onProgress((data) => {
-      setLaunchProgress(data.instanceId, { message: data.message, percent: data.percent, type: data.type });
+      setLaunchProgress(data.instanceId, {
+        message: data.message,
+        percent: data.percent,
+        type:    data.type,
+      });
     });
+
+    // Game log lines → Console tab
     const u2 = gc.launcher.onLog((data) => {
       appendGameLog(data.instanceId, data.line);
     });
+
+    // Game confirmed started (first output received)
+    // setInstanceRunning clears launchingInstances automatically
     const u3 = gc.launcher.onGameStart((data) => {
       setInstanceRunning(data.instanceId, true);
       toast.success('Minecraft launched!', { icon: '🎮' });
     });
+
+    // Game exited
     const u4 = gc.launcher.onGameClose((data) => {
+      // setInstanceRunning(false) clears both running and launching
       setInstanceRunning(data.instanceId, false);
-      clearLaunchProgress(data.instanceId);
+
+      // Only show "unexpected close" toast for non-zero, non-null codes
+      // and only if the game was actually running (not a failed launch)
       if (data.code !== 0 && data.code !== null) {
-        toast.error(`Game closed unexpectedly (exit code ${data.code}). Check the Console tab for logs.`);
+        toast.error(
+          `"${data.instanceId}" closed with code ${data.code}. Check Console for details.`,
+          { duration: 5000 }
+        );
       }
     });
-    // New: explicit launch errors forwarded from main process
+
+    // Explicit launch error forwarded from main process
+    // (e.g. Java not found, version files corrupted)
     const u5 = gc.launcher.onError((data) => {
-      clearLaunchProgress(data.instanceId);
-      toast.error(data.message, { duration: 8000 });
+      // Clear everything — button must return to idle
+      clearInstanceState(data.instanceId);
+      toast.error(data.message, {
+        duration: 10000,
+        style: { whiteSpace: 'pre-line', maxWidth: '440px' },
+      });
     });
+
     return () => { u1(); u2(); u3(); u4(); u5(); };
   }, []);
 
@@ -102,7 +128,7 @@ export default function App() {
     </div>
   );
 
-  // ── Not logged in ───────────────────────────────────────────
+  // ── Auth gate ───────────────────────────────────────────────
   if (!auth?.username) return (
     <div className="flex flex-col h-screen bg-dark-950 overflow-hidden">
       <TitleBar /><Login />
