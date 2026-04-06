@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { width: 100%; height: 100%; overflow: hidden; user-select: none; -webkit-user-select: none; }
+body { background-color: #111111; color: #f5f5f5; font-family: 'Inter', system-ui, sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #303030; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #484848; }
+::selection { background: rgba(245, 158, 11, 0.3); color: #f5f5f5; }
+
+@layer components {
+  .card { @apply bg-dark-800 border border-dark-700 rounded-2xl; }
+  .card-hover { @apply card transition-all duration-200 hover:border-dark-600 hover:shadow-card cursor-pointer; }
+
+  .btn-gold { @apply bg-gold-500 hover:bg-gold-400 text-dark-950 font-semibold px-5 py-2.5 rounded-xl transition-all duration-200 hover:shadow-gold active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed; }
+  .btn-gold-outline { @apply border border-gold-500 text-gold-400 hover:bg-gold-500/10 font-semibold px-5 py-2.5 rounded-xl transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed; }
+  .btn-ghost { @apply text-dark-300 hover:text-dark-100 hover:bg-dark-700 px-4 py-2 rounded-xl transition-all duration-200 active:scale-95; }
+  .btn-danger { @apply bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 px-4 py-2 rounded-xl transition-all duration-200 active:scale-95; }
+
+  .input { @apply bg-dark-900 border border-dark-600 rounded-xl px-4 py-2.5 text-dark-100 placeholder-dark-400 focus:outline-none focus:border-gold-500/60 focus:ring-1 focus:ring-gold-500/30 transition-all duration-200 w-full; }
+  .label { @apply text-dark-300 text-xs font-medium uppercase tracking-wider mb-1.5 block; }
+
+  .badge { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium; }
+  .badge-gold   { @apply badge bg-gold-500/15 text-gold-400 border border-gold-500/20; }
+  .badge-green  { @apply badge bg-green-500/15 text-green-400 border border-green-500/20; }
+  .badge-red    { @apply badge bg-red-500/15 text-red-400 border border-red-500/20; }
+  .badge-blue   { @apply badge bg-blue-500/15 text-blue-400 border border-blue-500/20; }
+  .badge-purple { @apply badge bg-purple-500/15 text-purple-400 border border-purple-500/20; }
+  .badge-gray   { @apply badge bg-dark-700 text-dark-300 border border-dark-600; }
+
+  .nav-item        { @apply flex items-center gap-3 px-3 py-2.5 rounded-xl text-dark-400 transition-all duration-200 cursor-pointer hover:text-dark-100 hover:bg-dark-700/50 font-medium text-sm select-none; }
+  .nav-item-active { @apply nav-item text-gold-400 bg-gold-500/10 hover:bg-gold-500/15 hover:text-gold-300; }
+
+  .drag-region { -webkit-app-region: drag; }
+  .no-drag     { -webkit-app-region: no-drag; }
+
+  .progress-bar  { @apply h-1.5 bg-dark-700 rounded-full overflow-hidden; }
+  .progress-fill { @apply h-full bg-gold-gradient rounded-full transition-all duration-300 ease-out; }
+
+  .skeleton { @apply bg-dark-700 rounded-xl animate-pulse; }
+
+  .section-title    { @apply font-display text-2xl font-bold text-dark-50 tracking-wide; }
+  .section-subtitle { @apply text-dark-400 text-sm mt-1; }
+
+  .toggle           { @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 cursor-pointer; }
+  .toggle-on        { @apply bg-gold-500; }
+  .toggle-off       { @apply bg-dark-600; }
+  .toggle-thumb     { @apply absolute left-0.5 h-5 w-5 rounded-full bg-white shadow-md transition-transform duration-200; }
+  .toggle-thumb-on  { @apply translate-x-5; }
+  .toggle-thumb-off { @apply translate-x-0; }
+}
+
+@layer utilities {
+  .text-gradient-gold { background: linear-gradient(135deg, #fcd34d, #f59e0b, #d97706); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .glow-gold  { filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.5)); }
+  .glass      { background: rgba(26,26,26,0.8); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+}
+
+.drop-zone-active { border-color: #f59e0b !important; background: rgba(245,158,11,0.05) !important; box-shadow: 0 0 20px rgba(245,158,11,0.15); }
