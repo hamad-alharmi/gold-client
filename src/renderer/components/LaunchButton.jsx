@@ -1,16 +1,18 @@
 /**
  * Gold Client — LaunchButton
  *
- * Three-state button:
- *   • 'idle'      → Gold "Launch" button
- *   • 'launching' → Amber progress bar button (launching in progress)
- *   • 'running'   → Red "Stop" button (game confirmed running)
+ * The IPC handler now returns immediately (fire-and-forget).
+ * All state changes come via IPC events handled in App.jsx:
  *
- * The 'launching' state is driven by launchingInstances (set on click,
- * cleared when game actually starts OR when launch fails).
- * The 'running' state is only set after the game emits its first output.
+ *   launcher:progress  → setLaunchProgress
+ *   launcher:game-start → setInstanceRunning(true)  [clears launching]
+ *   launcher:game-close → setInstanceRunning(false)
+ *   launcher:error     → clearInstanceState         [resets button to idle]
  *
- * This prevents the Stop button from appearing when launch fails.
+ * Three visual states:
+ *   idle      → Gold ▶ Launch button
+ *   launching → Amber spinner + progress percent (assets downloading / game starting)
+ *   running   → Red ■ Stop button
  */
 
 import React from 'react';
@@ -34,16 +36,15 @@ export default function LaunchButton({ instance, size = 'md' }) {
   const isLaunching = launchingInstances.has(instance.id) && !isRunning;
   const progress    = launchProgress[instance.id];
 
-  const sizes = {
-    sm: { btn: 'px-3 py-1.5 text-xs gap-1.5', icon: 12 },
-    md: { btn: 'px-4 py-2   text-sm gap-2',   icon: 14 },
-    lg: { btn: 'px-6 py-3   text-base gap-2.5', icon: 16 },
-  };
-  const s = sizes[size] || sizes.md;
+  const sz = {
+    sm: { cls: 'px-3 py-1.5 text-xs gap-1.5', icon: 12 },
+    md: { cls: 'px-4 py-2   text-sm gap-2',   icon: 14 },
+    lg: { cls: 'px-6 py-3   text-base gap-2.5', icon: 16 },
+  }[size] || { cls: 'px-4 py-2 text-sm gap-2', icon: 14 };
 
-  async function handleLaunch() {
-    // ── Stop running game ───────────────────────────────────────
+  async function handleClick() {
     if (isRunning) {
+      // ── Stop the game ──────────────────────────────────────────
       if (!window.confirm(`Stop "${instance.name}"?`)) return;
       try {
         await gc.launcher.kill(instance.id);
@@ -54,41 +55,54 @@ export default function LaunchButton({ instance, size = 'md' }) {
       return;
     }
 
-    // ── Prevent double-launch while loading ────────────────────
-    if (isLaunching) return;
+    if (isLaunching) return; // already in progress
 
-    // ── Start launch flow ───────────────────────────────
+    // ── Start the launch flow ──────────────────────────────────────
+    //
+    // Mark as "launching" immediately so the button shows the spinner.
+    // The IPC handler returns right away (fire-and-forget).
+    // Actual state transitions come via IPC events in App.jsx:
+    //   • launcher:game-start -> setInstanceRunning(true)  [clears launching]
+    //   • launcher:error      -> clearInstanceState        [back to idle]
+    //
     setInstanceLaunching(instance.id, true);
 
     try {
+      // This invoke returns immediately — does NOT wait for game to start
       await gc.launcher.launch(instance.id);
-      // Success path: game started, state transitions handled by
-      // the launcher:game-start and launcher:game-close IPC events in App.jsx
     } catch (err) {
-      // Launch failed — clear ALL state so button returns to idle
+      // Synchronous validation errors (instance not found, not logged in)
+      // arrive as IPC invoke rejections. Clear state and show toast.
       clearInstanceState(instance.id);
-      toast.error(
-        `Failed to launch "${instance.name}":\n${err.message}`,
-        { duration: 8000, style: { whiteSpace: 'pre-line', maxWidth: '420px' } }
-      );
+      toast.error(err.message, {
+        duration: 8000,
+        style: { whiteSpace: 'pre-line', maxWidth: '440px' },
+      });
     }
+    // Note: we do NOT clearInstanceState here on success —
+    // launcher:game-start will transition from launching → running,
+    // and launcher:error will reset to idle if anything goes wrong.
   }
 
-  // Determine button label
-  const label = isRunning   ? 'Stop'
-    : isLaunching && progress ? `${progress.percent}%`
-    : isLaunching             ? 'Starting...'
-    : 'Launch';
+  // Button label
+  const label = isRunning
+    ? 'Stop'
+    : isLaunching && progress?.percent != null
+      ? `${progress.percent}%`
+      : isLaunching
+        ? 'Starting…'
+        : 'Launch';
 
   return (
     <motion.button
-      onClick={handleLaunch}
+      onClick={handleClick}
       whileTap={{ scale: 0.96 }}
       disabled={isLaunching && !isRunning}
+      title={isLaunching && progress?.message ? progress.message : undefined}
       className={`
         relative inline-flex items-center justify-center font-semibold rounded-xl
         transition-all duration-200 overflow-hidden select-none
-        ${s.btn}
+        ${sz.cls}
         ${isRunning
           ? 'bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 cursor-pointer'
           : isLaunching
@@ -97,8 +111,8 @@ export default function LaunchButton({ instance, size = 'md' }) {
         }
       `}
     >
-      {/* Progress fill during launch */}
-      {isLaunching && progress && (
+      {/* Progress bar fill */}
+      {isLaunching && progress?.percent != null && (
         <div
           className="absolute inset-y-0 left-0 bg-gold-500/20 transition-all duration-500"
           style={{ width: `${progress.percent}%` }}
@@ -107,10 +121,10 @@ export default function LaunchButton({ instance, size = 'md' }) {
 
       <span className="relative flex items-center gap-2">
         {isLaunching
-          ? <Loader2 size={s.icon} className="animate-spin" />
+          ? <Loader2 size={sz.icon} className="animate-spin" />
           : isRunning
-            ? <Square size={s.icon} />
-            : <Play   size={s.icon} fill="currentColor" />
+            ? <Square size={sz.icon} />
+            : <Play   size={sz.icon} fill="currentColor" />
         }
         {label}
       </span>
