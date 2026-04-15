@@ -1,0 +1,125 @@
+name: Release Gold Client
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  package-windows:
+    name: Package Windows Installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gold-client-jar-windows-latest
+          path: dist/
+        continue-on-error: true
+
+      - name: Download native bridge (Windows)
+        uses: actions/download-artifact@v4
+        with:
+          name: native-bridge-windows-latest
+          path: dist/native/
+        continue-on-error: true
+
+      - name: Install NSIS
+        run: choco install nsis --yes
+
+      - name: Build NSIS installer
+        run: |
+          makensis /DVERSION=${{ github.ref_name }} `
+                   /DJAR_PATH=dist\ `
+                   /DNATIVE_PATH=dist\native\ `
+                   installer/windows/launcher.nsi
+
+      - name: Compute SHA-256 (Windows)
+        run: |
+          $hash = Get-FileHash "installer/windows/GoldClientSetup.exe" -Algorithm SHA256
+          $hash.Hash | Out-File -FilePath "GoldClientSetup.exe.sha256"
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            installer/windows/GoldClientSetup.exe
+            GoldClientSetup.exe.sha256
+
+  package-linux:
+    name: Package Linux AppImage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gold-client-jar-ubuntu-latest
+          path: dist/
+        continue-on-error: true
+
+      - name: Download native bridge (Linux)
+        uses: actions/download-artifact@v4
+        with:
+          name: native-bridge-ubuntu-latest
+          path: dist/native/
+        continue-on-error: true
+
+      - name: Install AppImage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 wget
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+      - name: Build AppImage
+        run: bash installer/linux/appimage.sh ${{ github.ref_name }}
+
+      - name: Compute SHA-256 (Linux)
+        run: sha256sum GoldClient-x86_64.AppImage > GoldClient-x86_64.AppImage.sha256
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: |
+            GoldClient-x86_64.AppImage
+            GoldClient-x86_64.AppImage.sha256
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [ package-windows, package-linux ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Gold Client ${{ github.ref_name }}"
+          body: |
+            ## Gold Client ${{ github.ref_name }}
+            Automated release built by GitHub Actions.
+            See CHANGELOG.md for full details.
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          files: |
+            release-assets/windows-installer/GoldClientSetup.exe
+            release-assets/windows-installer/GoldClientSetup.exe.sha256
+            release-assets/linux-appimage/GoldClient-x86_64.AppImage
+            release-assets/linux-appimage/GoldClient-x86_64.AppImage.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

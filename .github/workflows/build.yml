@@ -1,138 +1,87 @@
-# Gold Client — Build & Release
-#
-# How to release:
-#   git tag v1.0.1
-#   git push origin v1.0.1
-#   → Builds Gold Client Setup 1.0.1.exe and creates a GitHub Release.
-#
-# Manual build (no publish):
-#   Go to Actions → Build & Release → Run workflow
-
-name: Build & Release
+name: Build Gold Client
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
-  workflow_dispatch:
-    inputs:
-      publish:
-        description: 'Publish to GitHub Releases?'
-        type: choice
-        default: 'false'
-        options: ['true','false']
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  JAVA_VERSION: '21'
 
 jobs:
-  build-windows:
-    name: Build — Windows x64
-    runs-on: windows-latest
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows-latest, ubuntu-latest, macos-latest ]
+        include:
+          - os: windows-latest
+            native_ext: dll
+          - os: ubuntu-latest
+            native_ext: so
+          - os: macos-latest
+            native_ext: dylib
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          # No cache: '' so we don’t require a lockfile
-
-      # npm install (not npm ci) so we don’t need package-lock.json
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build Vite renderer
-        run: npx vite build
-
-      # Tag push → build + publish to GitHub Releases
-      - name: Build installer + publish
-        if: startsWith(github.ref, 'refs/tags/')
-        run: npx electron-builder --win --x64 --publish=always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Manual dispatch or PR → build only, no publish
-      - name: Build installer (no publish)
-        if: "!startsWith(github.ref, 'refs/tags/')"
-        run: npx electron-builder --win --x64 --publish=never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: GoldClient-Windows-x64
-          path: |
-            dist-electron/*.exe
-            dist-electron/latest.yml
-          if-no-files-found: warn
-          retention-days: 14
-
-  # ── Create GitHub Release (only on tag push) ───────────────────────────────
-  create-release:
-    name: Create Release
-    needs: [build-windows]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
         with:
-          name: GoldClient-Windows-x64
-          path: ./release-files
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'gradle'
 
-      - name: List release files
-        run: ls -la ./release-files/
-
-      - name: Get changelog
-        id: log
-        run: |
-          PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$PREV" ]; then
-            CHANGES=$(git log ${PREV}..HEAD --pretty=format:'- %s' --no-merges)
-          else
-            CHANGES=$(git log --pretty=format:'- %s' --no-merges -25)
-          fi
-          echo "changes<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
         with:
-          tag_name:   ${{ github.ref_name }}
-          name:       Gold Client ${{ github.ref_name }}
-          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-rc') }}
-          body: |
-            ## ⚔️ Gold Client ${{ github.ref_name }}
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
 
-            ### 📥 Installation
-            1. Download **Gold Client Setup ${{ github.ref_name }}.exe** below
-            2. Run the installer (Windows 10/11 x64)
-            3. Launch Gold Client from Desktop or Start Menu
+      - name: Grant execute permission for gradlew
+        if: runner.os != 'Windows'
+        run: chmod +x gradlew
 
-            ### ✅ Requirements
-            - Windows 10 or 11 (64-bit)
-            - [Java 17+](https://adoptium.net) — required to launch Minecraft
-            - Internet connection (downloads game assets on first launch)
-
-            ### 🔄 What's Changed
-            ${{ steps.log.outputs.changes }}
-
-            ---
-            *Built automatically by GitHub Actions*
-          files: ./release-files/*
+      - name: Build Gold Client JAR (shadowJar)
+        run: ./gradlew shadowJar --no-daemon --stacktrace
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          COMMIT_SHA: ${{ github.sha }}
+
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.28'
+
+      - name: Configure native bridge (CMake)
+        run: |
+          cmake -S native-bridge -B native-bridge/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLAUNCHER_VERSION=${{ github.run_number }}
+
+      - name: Build native bridge
+        run: cmake --build native-bridge/build --config Release --parallel
+
+      - name: Upload launcher JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-client-jar-${{ matrix.os }}
+          path: launcher-core/build/libs/*-all.jar
+          retention-days: 7
+
+      - name: Upload native bridge artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-bridge-${{ matrix.os }}
+          path: native-bridge/build/**/*.${{ matrix.native_ext }}
+          retention-days: 7
