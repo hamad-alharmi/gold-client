@@ -1,20 +1,22 @@
 {
   "version": "v1.0.0",
-  "releaseDate": "2026-04-15T05:32:13Z",
+  "releaseDate": "2026-04-15T05:46:22Z",
   "channel": "stable",
   "changelog": "https://github.com/hamad-alharmi/gold-client/releases",
   "platforms": {
     "windows": {
-      "url": "https://github.com/hamad-alharmi/gold-client/releases/download/v1.0.0/GoldClientSetup.exe",
-      "checksum": "",
-      "size": 0
+      "url": "https://github.com/hamad-alharmi/gold-client/releases/download/v1.0.0/GoldClient-Setup-v1.0.0.exe",
+      "checksum": ""
     },
     "linux": {
-      "url": "https://github.com/hamad-alharmi/gold-client/releases/download/v1.0.0/GoldClient-x86_64.AppImage",
-      "checksum": "",
-      "size": 0
+      "url": "https://github.com/hamad-alharmi/gold-client/releases/download/v1.0.0/GoldClient-v1.0.0.AppImage",
+      "checksum": ""
+    },
+    "mac": {
+      "url": "https://github.com/hamad-alharmi/gold-client/releases/download/v1.0.0/GoldClient-v1.0.0.dmg",
+      "checksum": ""
     }
   },
-  "minLauncherVersion": "1.0.0",
+  "minVersion": "1.0.0",
   "forceUpdate": false
 }
