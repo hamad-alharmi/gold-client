@@ -7,33 +7,65 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   generate-manifest:
     name: Generate & Publish Update Manifest
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout gh-pages branch
+      - name: Checkout main (to read repo metadata)
         uses: actions/checkout@v4
         with:
-          ref: gh-pages
+          ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create update-manifest directory
-        run: mkdir -p update-manifest
+      - name: Setup git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # ── Create gh-pages orphan branch if it doesn't exist yet ──────────────
+      - name: Ensure gh-pages branch exists
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages; then
+            echo "gh-pages exists, fetching..."
+            git fetch origin gh-pages
+            git checkout gh-pages
+          else
+            echo "gh-pages missing, creating orphan branch..."
+            git checkout --orphan gh-pages
+            git rm -rf . --quiet
+            echo "# Gold Client Update Manifest" > README.md
+            git add README.md
+            git commit -m "chore: initialise gh-pages branch"
+            git push origin gh-pages
+            echo "gh-pages created."
+          fi
+
+      # ── Generate manifest.json ──────────────────────────────────────────────
       - name: Generate manifest.json
         run: |
           VERSION="${{ github.event.release.tag_name }}"
+          # Fall back to 'v1.0.0' when triggered via workflow_dispatch
+          if [ -z "$VERSION" ]; then
+            VERSION="v1.0.0"
+          fi
+
           REPO="${{ github.repository }}"
+          CHANGELOG_URL="${{ github.event.release.html_url }}"
+          if [ -z "$CHANGELOG_URL" ]; then
+            CHANGELOG_URL="https://github.com/${REPO}/releases"
+          fi
+
+          mkdir -p update-manifest
+
           cat > update-manifest/manifest.json << EOF
           {
             "version": "${VERSION}",
             "releaseDate": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "channel": "stable",
-            "changelog": "${{ github.event.release.html_url }}",
+            "changelog": "${CHANGELOG_URL}",
             "platforms": {
               "windows": {
                 "url": "https://github.com/${REPO}/releases/download/${VERSION}/GoldClientSetup.exe",
@@ -51,10 +83,14 @@ jobs:
           }
           EOF
 
-      - name: Commit and push manifest to gh-pages
+          echo "Manifest written:"
+          cat update-manifest/manifest.json
+
+      # ── Commit & push ───────────────────────────────────────────────────────
+      - name: Commit and push manifest
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add update-manifest/manifest.json
-          git diff --staged --quiet || git commit -m "chore: update manifest to ${{ github.event.release.tag_name }}"
+          git diff --staged --quiet \
+            && echo "No changes to commit." \
+            || git commit -m "chore: update manifest to ${{ github.event.release.tag_name || 'manual' }}"
           git push origin gh-pages
