@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout main (to read repo metadata)
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: main
@@ -25,72 +25,68 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # ── Create gh-pages orphan branch if it doesn't exist yet ──────────────
       - name: Ensure gh-pages branch exists
         run: |
           if git ls-remote --exit-code --heads origin gh-pages; then
-            echo "gh-pages exists, fetching..."
             git fetch origin gh-pages
             git checkout gh-pages
           else
-            echo "gh-pages missing, creating orphan branch..."
             git checkout --orphan gh-pages
             git rm -rf . --quiet
             echo "# Gold Client Update Manifest" > README.md
             git add README.md
             git commit -m "chore: initialise gh-pages branch"
             git push origin gh-pages
-            echo "gh-pages created."
           fi
 
-      # ── Generate manifest.json ──────────────────────────────────────────────
-      - name: Generate manifest.json
+      - name: Resolve version and URLs
+        id: vars
         run: |
           VERSION="${{ github.event.release.tag_name }}"
-          # Fall back to 'v1.0.0' when triggered via workflow_dispatch
-          if [ -z "$VERSION" ]; then
-            VERSION="v1.0.0"
-          fi
+          [ -z "$VERSION" ] && VERSION="v1.0.0"
+
+          CHANGELOG="${{ github.event.release.html_url }}"
+          [ -z "$CHANGELOG" ] && CHANGELOG="https://github.com/${{ github.repository }}/releases"
 
           REPO="${{ github.repository }}"
-          CHANGELOG_URL="${{ github.event.release.html_url }}"
-          if [ -z "$CHANGELOG_URL" ]; then
-            CHANGELOG_URL="https://github.com/${REPO}/releases"
-          fi
+          BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 
+          echo "version=${VERSION}"     >> $GITHUB_OUTPUT
+          echo "changelog=${CHANGELOG}" >> $GITHUB_OUTPUT
+          echo "base_url=${BASE}"       >> $GITHUB_OUTPUT
+
+      - name: Write manifest.json
+        run: |
           mkdir -p update-manifest
-
           cat > update-manifest/manifest.json << EOF
           {
-            "version": "${VERSION}",
+            "version": "${{ steps.vars.outputs.version }}",
             "releaseDate": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "channel": "stable",
-            "changelog": "${CHANGELOG_URL}",
+            "changelog": "${{ steps.vars.outputs.changelog }}",
             "platforms": {
               "windows": {
-                "url": "https://github.com/${REPO}/releases/download/${VERSION}/GoldClientSetup.exe",
-                "checksum": "",
-                "size": 0
+                "url": "${{ steps.vars.outputs.base_url }}/GoldClient-Setup-${{ steps.vars.outputs.version }}.exe",
+                "checksum": ""
               },
               "linux": {
-                "url": "https://github.com/${REPO}/releases/download/${VERSION}/GoldClient-x86_64.AppImage",
-                "checksum": "",
-                "size": 0
+                "url": "${{ steps.vars.outputs.base_url }}/GoldClient-${{ steps.vars.outputs.version }}.AppImage",
+                "checksum": ""
+              },
+              "mac": {
+                "url": "${{ steps.vars.outputs.base_url }}/GoldClient-${{ steps.vars.outputs.version }}.dmg",
+                "checksum": ""
               }
             },
-            "minLauncherVersion": "1.0.0",
+            "minVersion": "1.0.0",
             "forceUpdate": false
           }
           EOF
 
-          echo "Manifest written:"
-          cat update-manifest/manifest.json
-
-      # ── Commit & push ───────────────────────────────────────────────────────
-      - name: Commit and push manifest
+      - name: Commit and push
         run: |
           git add update-manifest/manifest.json
           git diff --staged --quiet \
-            && echo "No changes to commit." \
-            || git commit -m "chore: update manifest to ${{ github.event.release.tag_name || 'manual' }}"
+            && echo "Nothing to commit." \
+            || git commit -m "chore: update manifest to ${{ steps.vars.outputs.version }}"
           git push origin gh-pages

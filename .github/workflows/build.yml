@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  JAVA_VERSION: '21'
-
 jobs:
   build:
     name: Build (${{ matrix.os }})
@@ -16,72 +13,62 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ windows-latest, ubuntu-latest, macos-latest ]
         include:
           - os: windows-latest
-            native_ext: dll
+            build_script: build:win
+            artifact_glob: dist-electron/*.exe
+            artifact_name: gold-client-windows
           - os: ubuntu-latest
-            native_ext: so
+            build_script: build:linux
+            artifact_glob: dist-electron/*.AppImage
+            artifact_name: gold-client-linux
           - os: macos-latest
-            native_ext: dylib
+            build_script: build:mac
+            artifact_glob: dist-electron/*.dmg
+            artifact_name: gold-client-mac
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          fetch-depth: 0
+          node-version: '20'
+          cache: 'npm'
 
-      - name: Setup JDK ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@v4
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: 'temurin'
-          cache: 'gradle'
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
-      - name: Grant execute permission for gradlew
-        if: runner.os != 'Windows'
-        run: chmod +x gradlew
-
-      - name: Build Gold Client JAR (shadowJar)
-        run: ./gradlew shadowJar --no-daemon --stacktrace
-        env:
-          BUILD_NUMBER: ${{ github.run_number }}
-          COMMIT_SHA: ${{ github.sha }}
-
-      - name: Setup CMake
-        uses: jwlawson/actions-setup-cmake@v2
-        with:
-          cmake-version: '3.28'
-
-      - name: Configure native bridge (CMake)
+      # Linux needs these libs for Electron to run headlessly
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
         run: |
-          cmake -S native-bridge -B native-bridge/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLAUNCHER_VERSION=${{ github.run_number }}
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libnotify-dev \
+            libnss3 \
+            libxss1 \
+            libxtst6 \
+            xauth \
+            xvfb \
+            libgbm-dev
 
-      - name: Build native bridge
-        run: cmake --build native-bridge/build --config Release --parallel
+      - name: Build renderer (Vite)
+        run: npm run build:renderer
 
-      - name: Upload launcher JAR artifact
+      - name: Package with electron-builder
+        run: npm run ${{ matrix.build_script }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Code signing — leave empty on forks/PRs, set in repo secrets for signed builds
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gold-client-jar-${{ matrix.os }}
-          path: launcher-core/build/libs/*-all.jar
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_glob }}
           retention-days: 7
-
-      - name: Upload native bridge artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-bridge-${{ matrix.os }}
-          path: native-bridge/build/**/*.${{ matrix.native_ext }}
-          retention-days: 7
+          if-no-files-found: warn
